@@ -1,55 +1,26 @@
-# Instructions to set up a HashiCorp secret engine
+# Tutorial to use the hashicorp vault engine
 
-## Contents
+## Write the config file for vault engine
 
-- [Installization](#Installization)
-- [Initialization](#initialization)
-- [Unseal](#unseal)
-- [Docker Implementation](#docker-implementation)
-
-## Installization
-
-<https://learn.hashicorp.com/tutorials/vault/getting-started-install?in=vault/getting-started>
-
-*Note*: Remember to check `Path` if using Windows
-
-## Initialization
-
-Create `config.hcl` on the host server to sepcify the storage and listener settings
+The config.hcl is used to specify the configuration of the vault engine server
 
 ```dotnetcli
-storage "file" {
-  path = "vault-data"
-}
-
-listener "tcp" {
-  tls_disable = "true"
-}
+storage "file" { 
+  path = "/vault-data" 
+} 
+listener "tcp" { 
+  address = "0.0.0.0:8200"
+  tls_disable = "true" 
+} 
+ui = true 
+disable_mlock=true 
 ```
 
-Here is a more detailed version:
-
-```dotnetcli
-storage "raft" {
-  path    = "./vault/data"
-  node_id = "node1"
-}
-
-listener "tcp" {
-  address     = "http://127.0.0.1:8200"
-  tls_disable = "true"
-}
-
-api_addr = "http://127.0.0.1:8200"
-cluster_addr = "https://127.0.0.1:8201"
-ui = true
-```
-
-Those are the primary configurations:
+It is a sample config file. Those are the primary configurations:
 
 - **storage** - This is the physical backend that Vault uses for storage. Up to this point the dev server has used "inmem" (in memory), but the example above uses integrated storage (raft), a much more production-ready backend.
 
-- **listener** - One or more listeners determine how Vault listens for API requests. The example above listens on localhost port 8200 without TLS. In your environment set VAULT_ADDR=`http://127.0.0.1:8200` so the Vault client will connect without TLS.
+- **listener** - One or more listeners determine how Vault listens for API requests. The example above listens on localhost port 8200 without TLS. **If you want to change the port, you need to change the environment variable `VAULT_ADDR` to the same vaule in the `DOCKERFILE` mentioned later.**
 
     *Note*: keep `tls_disable` false in real practices
 
@@ -61,155 +32,24 @@ Those are the primary configurations:
 
     *Note*: Disabling mlock is strongly recommended if using integrated storage due to the fact that mlock does not interact well with memory mapped files such as those created by BoltDB, which is used by Raft to track state. When using mlock, memory-mapped files get loaded into resident memory which causes Vault's entire dataset to be loaded in-memory and cause out-of-memory issues if Vault's data becomes larger than the available RAM. In this case, even though the data within BoltDB remains encrypted at rest, swap should be disabled to prevent Vault's other in-memory sensitive data from being dumped into disk.
 
-The config.hcl file stores the configuration information. Based on config.hcl, you can setup the secret engine on the host server. If you prefer to use CLI, you can either set environment variable `VAULT_ADDR` to the server IP address or add `-address=$VAULT_ADDR` after the subcommand.
+## Write the Dockerfile for docker image
 
-CLI:
-
-```dotnetcli
-export VAULT_ADDR='http:127.0.0.1:8200'
-vault server -config=config.hcl
-```
-
-or
+Dockerfile specify the OS of the image by `FROM` as a version control tool. It also adds the scrips and vault library to the image. `ENV` sets the environment variable VAULT_ADDR the same as tcp listener address. You may not need to change the sample configuration below
 
 ```dotnetcli
-vault server -config=config.hcl -address='http:127.0.0.1:8200'
+FROM ubuntu:latest
+RUN mkdir /vault-data
+COPY config.hcl .
+COPY vault /usr/bin
+COPY init.sh .
+ENV VAULT_ADDR="http://0.0.0.0:8200"
+CMD vault server -config=config.hcl
+EXPOSE 8200/tcp
 ```
 
-*Note*: No API option for this step
+You may need to download the vault library for linux from <https://releases.hashicorp.com/vault/1.4.2/vault_1.4.2_linux_amd64.zip> and unzip the file `vault` to the current directory(the same position as Dockerfile and config.hcl)
 
-Example output:
-
-```dotnetcli
-==> Vault server configuration:
-
-             Api Address: http://127.0.0.1:8200
-                     Cgo: disabled
-         Cluster Address: https://127.0.0.1:8201
-              Go Version: go1.16.2
-              Listener 1: tcp (addr: "127.0.0.1:8200", cluster address: "127.0.0.1:8201", max_request_duration: "1m30s", max_request_size: "33554432", tls: "disabled")
-               Log Level: info
-                   Mlock: supported: true, enabled: true
-           Recovery Mode: false
-                 Storage: raft (HA available)
-                 Version: Vault v1.7.0
-             Version Sha: 4e222b85c40a810b74400ee3c54449479e32bb9f
-
-==> Vault server started! Log data will stream in below:
-```
-
-*Note*: Mlock may be missed in some OS, it is better to set it up for security concern. Otherwise, hackers can read the secret because the info may leak to local memory.
-
-The server is initializedf:
-
-API:
-
-```dotnetcli
-curl \
-    --request POST \
-    --data '{"secret_shares": 1, "secret_threshold": 1}' \
-    http://127.0.0.1:8200/v1/sys/init | jq
-```
-
-Example output: (`keys_base64` is the unseal key)
-
-```dotnetcli
-{
-  "keys": [
-    "af3f49b1793a4200f0e52f045d4688972d933a744e7d6bbe8c9878537c5b39b1"
-  ],
-  "keys_base64": [
-    "rz9JsXk6QgDw5S8EXUaIly2TOnROfWu+jJh4U3xbObE="
-  ],
-  "root_token": "s.4fypdoPS6BEwQ5YppD44SfTA"
-}
-```
-
-CLI:
-
-```dotnetcli
-vault operator init \
--key-shares=3 \
--key-threshold=2
-```
-
-Example output:
-
-```dotnetcli
-Unseal Key 1: 4jYbl2CBIv6SpkKj6Hos9iD32k5RfGkLzlosrrq/JgOm
-Unseal Key 2: B05G1DRtfYckFV5BbdBvXq0wkK5HFqB9g2jcDmNfTQiS
-Unseal Key 3: Arig0N9rN9ezkTRo7qTB7gsIZDaonOcc53EHo83F5chA
-
-Initial Root Token: s.KkNJYWF5g0pomcCLEmDdOVCW
-
-Vault initialized with 3 key shares and a key threshold of 2. Please securely
-distribute the key shares printed above. When the Vault is re-sealed,
-restarted, or stopped, you must supply at least 2 of these keys to unseal it
-before it can start servicing requests.
-
-Vault does not store the generated master key. Without at least 3 key to
-reconstruct the master key, Vault will remain permanently sealed!
-
-It is possible to generate new unseal keys, provided you have a quorum of
-existing unseal keys shares. See "vault operator rekey" for more information.
-```
-
-The initialization step can take 2 optional parameters: shares and threshold. (default 5 shares and 3 threshold)
-
-- **shares**: the number of generated unsealed keys
-- **threshold**: the minimum keys required to unseal the secret engine
-
-*Note*: the generated unseal keys must be securely kept
-
-## Unseal
-
-When the vault is just initialized, it is sealed and unable to be accessed. You can use the unseal key to unseal the vault. In the previous CLI example, you need 2 unseal keys(corresponding to the threshold).
-
-The unseal operation can be completed by CLI or API. If you use CLI to unseal the vault, you need to login in advance. Each example indicates the one unseal key contribution. To complete the unsealing, you may need to repeat the step.
-
-CLI:
-
-```dotnetcli
-vault operator unseal /ye2PeRrd/qruh9Ppu9EyUjk1vLqIflg1qqw6w9OE5E=
-```
-
-API:
-
-```dotnetcli
-curl \
-    --request POST \
-    --data '{"key": "/ye2PeRrd/qruh9Ppu9EyUjk1vLqIflg1qqw6w9OE5E="}' \
-    http://127.0.0.1:8200/v1/sys/unseal | jq
-```
-
-When you successfully login, the token will be stored locally at `~/.vault-token`
-
-***
-
-## Docker implementation
-
-The secret engine needs a configuratoin file to know how to build itself. You can create a `config.hcl` file to specifiy
-
-```dotnetcli
-touch config.hcl
-cat > config.hcl << EOF
-storage "file" {
-  path = "/vault-data"
-}
-
-listener "tcp" {
-  tls_disable = "true"
-}
-ui = true
-disable_mlock=true
-EOF
-```
-
-*Note*: The address under tcp is set in DOCKERFILE as an environment variable.
-
-To create a linux docker image, you need to write a Dockerfile locally
-
-CLI:
+If you don't mind to let the docker deal with the download and unzip process, you can try the Dockerfile below. However, it will take extra 200MB space to install essential tools
 
 ```dotnetcli
 FROM ubuntu:latest
@@ -223,190 +63,159 @@ RUN rm vault_1.4.2_linux_amd64.zip
 
 RUN mkdir /vault-data
 COPY config.hcl .
-//COPY vault /usr/bin
 COPY init.sh .
 ENV VAULT_ADDR="http://0.0.0.0:8200"
 CMD vault server -config=config.hcl
 EXPOSE 8200/tcp
 ```
 
-Right now, the docker config file is completed. You need to build the docker image. You can replace `dockv` to any other *image name* you prefer
+## Write the initalization script
+
+The sample script `init.sh` specify the secret engine with 3 keys and you need at least 2 keys to unseal the vault. You can change the number depending on the condition
+
+If you want to add more keys, change the arguements of `vault operator init`: `-key-shares=3` and `-key-threshold=2`. `key-shares` should not be smaller than `key-threshold`. You also need to copy and paste the `vault operator unseal`, and replace `sed -n 2p` to `sed -n 3p`, etc.
+
+Overall, you need to unseal with the number of keys as specified by the `key-threshold`.
+
+The code of init.sh:
 
 ```dotnetcli
-docker build -t dockv .
+#!/bin/bash
+touch keys
+if [[ ! -s keys ]]
+then
+    echo "init..."
+    vault operator init -key-shares=3 -key-threshold=2 > keys
+fi
+vault operator unseal $(cat keys | grep -i key | sed -n 1p | cut -d ':' -f2 | tr -d ' ')
+vault operator unseal $(cat keys | grep -i key | sed -n 2p | cut -d ':' -f2 | tr -d ' ')
+vault login $(cat keys | grep -i token | sed -n 1p | cut -d ':' -f2 | tr -d ' ')
+echo -e "--------------------"
+cat keys
 ```
 
-*Note*: ABBGLOBAL doesn't  allow the connection to the alpine website
+The end of script will print the keys and root token. Keep them stored carefully somewhere else. In practice, you need to delete the file `keys` and store the engine info in a secure place.
 
-You can see the images created by
+If you write the script on your own, remember to offer permission to execute it
 
 ```dotnetcli
-docker images
+chmod +x init.sh
 ```
 
-Sample ouput:
+## Build the docker image and run the container
+
+With the script `build.sh`, you can build the docker image, run the container and shell in the docker bash
+
+***Note***: run the script in `Git Bash` rather than `cmd` or `power shell`
+
+The code of `build.sh`:
 
 ```dotnetcli
-REPOSITORY   TAG       IMAGE ID       CREATED       SIZE
-dockv        latest    cca66b32b9fd   3 hours ago   24.1MB
+#!/bin/bash
+if [[ $# -le 1 ]]
+then
+    echo -e "The docker image name:"
+    read image_name
+    docker build -t $image_name .
+    echo -e "---------------------------\nThe docker container name:"
+    read container_name
+    if [[ $# -eq 0 ]]
+    then
+        docker run --name $container_name -dp 80:8200 $image_name
+    else
+        docker run --name $container_name -dp $1:8200 $image_name
+    fi
+    docker exec -it $container_name ./bin/bash
+else
+    docker build -t $1 .
+    if [[ $# -eq 2 ]]
+    then
+        docker run --name $2 -dp 80:8200 $1
+    else
+        docker run --name $2 -dp $3:8200 $1
+    fi
+    docker exec -it $2 ./bin/bash
+fi
 ```
 
-Then run the image to create a container instance. Replace `dockv-test` to your *container name*, and `dockv` to your *image name*
+If you create the script by your own, remember to offer permission to execute it
 
 ```dotnetcli
-docker run --name dockv-test -dt -p 8200:8200 dockv
+chmod +x build.sh
 ```
 
-The command above creates a container run on the background and you need to close it manually. If you only want to test it temporarily, you can try this
+Run the script, and the arguments are optional. The default port is 80. If you don't pass the image name and container name, you can specify them when the script is runnig
 
 ```dotnetcli
-docker run --name dockv-test -it dockv
+./build.sh
+
+./build.sh [port]
+
+./build.sh [image name] [container name]
+
+./build.sh [image name] [container name] [port]
 ```
 
-The the meaning of those configurations is listed below:
+## Initialize the engine
 
-- **-d** datached on the background
-- **-i** interactive
-- **-t** terminal typing style
-
-If you choose to run the container on the background, you will need the following command to get in the bash shell
+After the execution of build.sh, you should have been into the bash of the engine. You can run the init.sh to initialize the server that generate the keys and root token
 
 ```dotnetcli
-docker exec -it dockv-test /bin/bash
+./init.sh
 ```
 
-*Note*: the command above can not be run in the Git Bash; Windows users need to run it in the power shell. If you are wondering how to run it in Git Bash, I found the solution as below
+As mentioned before, securely keep the keys and token. The vault should have been unsealed.
 
-Git Bash:
-
-```dotnetcli
-(winpty) docker exec -it dockv-test ./bin/bash
-```
-
-### CLI
-
-Initialize the server by specifing the key-shares and key-threshold
-
-```dotnetcli
-vault operator init \
--key-shares=3 \
--key-threshold=2
-```
-
-You should get the response like
-
-```dotnetcli
-Unseal Key 1: TtYt/olbGzr2RXNc0QDR2uRtaZaznrRgLU2pk9SEPdcD
-Unseal Key 2: PA5x5iIyr9Eo3+KfhNSCBlmxiS6oHhXnvfi3kfs0fAFZ
-Unseal Key 3: y1IiVZpD3cUeCZlFXFwwFqChMIguXRPd1Zlut0wKw69g
-
-Initial Root Token: s.DqXcpH9l85vwAuXxW1SmTyFs
-```
-
-Securely keep the keys and the token in another place carefully.
-
-You will need the unseal keys to unseal the vault
-
-```dotnetcli
-vault operator unseal TtYt/olbGzr2RXNc0QDR2uRtaZaznrRgLU2pk9SEPdcD
-
-vault operator unseal PA5x5iIyr9Eo3+KfhNSCBlmxiS6oHhXnvfi3kfs0fAFZ
-```
-
-*Note*: You will need two keys to unseal the vault. In practice, the two operations should be executed by two seperate persons.
-
-Then use the token you got with the keys to log in the vault
-
-```dotnetcli
-vault login s.DqXcpH9l85vwAuXxW1SmTyFs
-```
-
-If you got the response below, you have successfully logged in
-
-```dotnetcli
-Key                  Value
----                  -----
-token                s.DqXcpH9l85vwAuXxW1SmTyFs
-token_accessor       R0rCyedYCqcyAU0cAxbj7SBK
-token_duration       ∞
-token_renewable      false
-token_policies       ["root"]
-identity_policies    []
-policies             ["root"]
-```
-
-*Note*: If you set the environment `VAULT_TOKEN` as `s.DqXcpH9l85vwAuXxW1SmTyFs`, it has the same effect of login:
-
-```dotnetcli
-export VAULT_TOKEN="s.DqXcpH9l85vwAuXxW1SmTyFs"
-```
-
-But you will need to use unset command to exit, and you cannot use login to switch the token if `VAULT_TOKEN` is set
-
-```dotnetcli
-unset VAULT_TOKEN
-```
-
-If you want to reseal the vault, simply use the command
+You can reseal the vault by
 
 ```dotnetcli
 vault operator seal
 ```
 
+To unseal the vault in the future, you can rerun the init.sh, or run the command
+
+```dotnetcli
+vault operator unseal $unseal_key
+```
+
+You also need to repeat several times as the same as `key-threshold`. This step can also be implemented by API that will be introduced later.
+
+## Exit the engine bash
+
+You can type `exit` to exit or simply press `ctrl+z`
+
+When you exit the bash, the container is still running in background. You can check it by
+
+```dotnetcli
+docker ps
+```
+
+The state and port info will be shown as well.
+
+When you want to access the engine in the docker from outside, you need to set your environment vairable as `http://0.0.0.0:$port`, the `port` is the value you specified at build stage. The default value should be 80
+
+```dotnetcli
+export VAULT_ADDR="http://0.0.0.0:80"
+```
+
+You also need a token to login. You can use the root token, or created token as introduced below
+
+```dotnetcli
+vault login s.jVFBWDMeYa4ZMQ85RASYKGkk
+```
+
+## Creat vault policies
+
 Enable authentication method: AppRole
 
-```dotnetcli
-vault auth enable -output-curl-string approle
-```
-
-### API
-
-You can use HTTP request to finsh the previous steps
-
-```dotnetcli
-curl \
-    --request POST \
-    --data '{"secret_shares": 1, "secret_threshold": 1}' \
-    http://127.0.0.1:8200/v1/sys/init | jq
-```
-
-Example output: (`keys_base64` is the unseal key)
-
-```dotnetcli
-{
-  "keys": [
-    "af3f49b1793a4200f0e52f045d4688972d933a744e7d6bbe8c9878537c5b39b1"
-  ],
-  "keys_base64": [
-    "rz9JsXk6QgDw5S8EXUaIly2TOnROfWu+jJh4U3xbObE="
-  ],
-  "root_token": "s.4fypdoPS6BEwQ5YppD44SfTA"
-}
-```
-
-Set the environment variable VAULT_TOKEN to prove the accessibility
-
-```dotnetcli
-export VAULT_TOKEN="s.4fypdoPS6BEwQ5YppD44SfTA"
-```
-
-Unseal
-
-```dotnetcli
-curl \
-    --request POST \
-    --data '{"key": "/ye2PeRrd/qruh9Ppu9EyUjk1vLqIflg1qqw6w9OE5E="}' \
-    http://127.0.0.1:8200/v1/sys/unseal | jq
-```
-
-Enable authentication method: AppRole
+*Note*: the URL can not be 0.0.0.0. You can use either localhost or 127.0.0.1, which is the loopback address of your local host
 
 ```dotnetcli
 curl \
     --header "X-Vault-Token: $VAULT_TOKEN" \
     --request POST \
     --data '{"type": "approle"}' \
-    http://127.0.0.1:8200/v1/sys/auth/approle
+    http://127.0.0.1:80/v1/sys/auth/approle
 ```
 
 Write a set of [policies](https://www.vaultproject.io/docs/concepts/policies)
@@ -415,64 +224,63 @@ Write a set of [policies](https://www.vaultproject.io/docs/concepts/policies)
 curl \
     --header "X-Vault-Token: $VAULT_TOKEN" \
     --request PUT \
-    --data '{"policy":"# Dev servers have version 2 of KV secrets engine mounted by default, so will\n# need these paths to grant permissions:\npath \"secret/data/*\" {\n  capabilities = [\"create\", \"update\"]\n}\n\npath \"secret/data/foo\" {\n  capabilities = [\"read\"]\n}\n"}' \
-    http://127.0.0.1:8200/v1/sys/policies/acl/my-policy
+    --data '{"policy":"path \"secret/data/*\" {\n  capabilities = [\"create\", \"update\"]\n}\n\npath \"secret/data/foo\" {\n  capabilities = [\"read\"]\n}\n"}' \
+    http://127.0.0.1:80/v1/sys/policies/acl/my-policy
 ```
 
-The policy specifies the permission under directory of secret/data. However, it haven't existed yet. You need to create the secret engine at secret/
+The policy specifies the permission under directory of `secret/`. However, it haven't existed yet. You need to create the secret engine `secret/`
 
 ```dotnetcli
 curl \
     --header "X-Vault-Token: $VAULT_TOKEN" \
     --request POST \
     --data '{ "type":"kv-v2" }' \
-    http://127.0.0.1:8200/v1/sys/mounts/secret
+    http://127.0.0.1:80/v1/sys/mounts/secret
 ```
 
-The following command specifies the token issued under the AppRole `my-role` should be applied by the policy of `my-policy` created before
+The following command creates a new role called `my-role` and specifies the token issued under `my-role` should be applied by the policy of `my-policy`
 
 ```dotnetcli
 curl \
     --header "X-Vault-Token: $VAULT_TOKEN" \
     --request POST \
     --data '{"policies": ["my-policy"]}' \
-    http://127.0.0.1:8200/v1/auth/approle/role/my-role
+    http://127.0.0.1:80/v1/auth/approle/role/my-role
 ```
 
-The AppRole auth method expects a RoleID and a SecretID as its input. The RoleID is similar to a username and the SecretID can be thought as the RoleID's password.
+The AppRole auth method expects a RoleID and a SecretID to issue a token. The RoleID is similar to a username and the SecretID can be thought as the RoleID's password.
 
-The following command fetches the RoleID of the role named `my-role`
+The following command fetches the RoleID of `my-role`
 
 ```dotnetcli
 curl \
     --header "X-Vault-Token: $VAULT_TOKEN" \
-     http://127.0.0.1:8200/v1/auth/approle/role/my-role/role-id | jq -r ".data"
+     http://127.0.0.1:80/v1/auth/approle/role/my-role/role-id | jq -r ".data"
 ```
 
 The response will include the role_id
 
 ```dotnetcli
 {
-  "role_id": "3c301960-8a02-d776-f025-c3443d513a18"
+  "role_id": "9546663a-e013-a4be-29f5-762a337388b9"
 }
 ```
 
-To create a new SecretID under `my-role`
+Generate a new SecretID under `my-role`
 
 ```dotnetcli
 curl \
     --header "X-Vault-Token: $VAULT_TOKEN" \
     --request POST \
-    http://127.0.0.1:8200/v1/auth/approle/role/my-role/secret-id | jq -r ".data"
+    http://127.0.0.1:80/v1/auth/approle/role/my-role/secret-id | jq -r ".data"
 ```
 
 The response will include the secret_id
 
 ```dotnetcli
 {
-  "secret_id": "22d1e0d6-a70b-f91f-f918-a0ee8902666b",
-  "secret_id_accessor": "726ab786-70d0-8cc4-e775-c0a75070e5e5",
-  "secret_id_ttl": 0
+  "secret_id": "24a44d54-ad8e-b02a-935c-8dec75b09d32",
+  "secret_id_accessor": "500dc412-8eb5-a1aa-eb4f-484ff31747ff"
 }
 ```
 
@@ -480,16 +288,16 @@ Those two credentials can be used to create a new token at the login endpoint
 
 ```dotnetcli
 curl --request POST \
-       --data '{"role_id": "3c301960-8a02-d776-f025-c3443d513a18", "secret_id": "22d1e0d6-a70b-f91f-f918-a0ee8902666b"}' \
-       http://127.0.0.1:8200/v1/auth/approle/login | jq -r ".auth"
+       --data '{"role_id": "9546663a-e013-a4be-29f5-762a337388b9", "secret_id": "24a44d54-ad8e-b02a-935c-8dec75b09d32"}' \
+       http://127.0.0.1:80/v1/auth/approle/login | jq -r ".auth"
 ```
 
 The response would be like
 
 ```dotnetcli
 {
-  "client_token": "s.p5NB4dTlsPiUU94RA5IfbzXv",
-  "accessor": "EQTlZwOD4yIFYWIg5YY6Xr29",
+  "client_token": "s.jDwrDgDUJ2jfKn0Ek7fUq50B",
+  "accessor": "op9sKY3F61tp5oKIiD1aM7e8",
   "policies": [
     "default",
     "my-policy"
@@ -503,7 +311,7 @@ The response would be like
   },
   "lease_duration": 2764800,
   "renewable": true,
-  "entity_id": "4526701d-b8fd-3c39-da93-9e17506ec894",
+  "entity_id": "71e0bfd3-e3e7-f05f-85cd-d2c841d08c2c",
   "token_type": "service",
   "orphan": true
 }
@@ -511,55 +319,267 @@ The response would be like
 
 The `client token` can be used to authenticate with vault under `my-policy`
 
-You can create a secret named `creds` with a key `password` and its vaule set to `my-long-password`
+## API interaction
+
+Before switch to the new token, you can try to interact with the vault by [API](https://www.vaultproject.io/api-docs/secret/kv/kv-v2) with root privilege
+
+*Note*: We use the k/v version 2 to interact
+
+```dotnetcli
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request POST \
+    --data '{ "data": {"url": "http://mywebsite.com/abc"} }' \
+    http://127.0.0.1:80/v1/secret/data/foo | jq -r ".data"
+```
+
+Then you can list the entry under `secret/`
+
+```dotnetcli
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request LIST \
+    http://127.0.0.1:80/v1/secret/metadata | jq -r ".data"
+```
+
+Sample output:
+
+```dotnetcli
+{
+  "keys": [
+    "creds"
+  ]
+}
+```
+
+You can see `creds` is shown under `secret/metadata`. Generally, if you want to get/delete/create/update an entry, the path should be `engine_path/data/:path`; if you want to list the entries, the path should be `engine_path/metadata/:path`. You can check the [API](https://www.vaultproject.io/api-docs/secret/kv/kv-v2) for more details
+
+Here are tricky examples to interact with vault with payload
+
+```dotnetcli
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request POST \
+    --data @- \
+    http://127.0.0.1:80/v1/secret/data/test/a << eof | jq -r ".data"
+{
+    "data": {
+      "foo": "bar",
+      "zip": "zap"
+    }
+}
+eof
+```
+
+```dotnetcli
+cat << eof | curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request POST \
+    --data @payload.json \
+    http://127.0.0.1:80/v1/secret/data/test/a | jq -r ".data"
+{
+    "data": {
+      "foo": "bar",
+      "zip": "zap"
+    }
+}
+eof
+```
+
+```dotnetcli
+cat > payload.json << eof
+{
+    "data": {
+      "foo": "bar",
+      "zip": "zap"
+    }
+}
+eof
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request POST \
+    --data @payload.json \
+    http://127.0.0.1:80/v1/secret/data/test/a | jq -r ".data"
+```
+
+Those 3 methods are the same to the vault, and you can choose one based on your demands
+
+You can list the entries under `secret/test/`
+
+```dotnetcli
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request LIST \
+    http://127.0.0.1:80/v1/secret/metadata/test | jq -r ".data"
+```
+
+Get the key/secret in `secret/test/a`
+
+```dotnetcli
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request GET \
+    http://127.0.0.1:80/v1/secret/data/test/a | jq -r ".data"
+```
+
+Sample response:
+
+```dotnetcli
+{
+  "data": {
+    "foo": "bar",
+    "zip": "zap"
+  },
+  "metadata": {
+    "created_time": "2021-05-27T06:52:15.7473318Z",
+    "deletion_time": "",
+    "destroyed": false,
+    "version": 3
+  }
+}
+```
+
+The `metadata` tells the created time, and modified times(version). The version can also be used to realize version control like rolling back. You can change the version control settings by update metadata (Check [API](https://www.vaultproject.io/api-docs/secret/kv/kv-v2)).
+
+If you don't want to get the metadata in the response, you can modify the command as
+
+```dotnetcli
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request GET \
+    http://127.0.0.1:80/v1/secret/data/test/a | jq -r ".data.data"
+```
+
+Sample response:
+
+```dotnetcli
+{
+  "foo": "bar",
+  "zip": "zap"
+}
+```
+
+If you don't know `jq`, you may still find the string after `-r` specifies the object in the json response: `res.data.data`. You can modify it depends on your demands
+
+To delete the entry, replace DELETE to GET in the RETS command
+
+```dotnetcli
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request DELETE \
+    http://127.0.0.1:80/v1/secret/data/test/a
+```
+
+This request has no response. If you list the entries under `secret/test`, you should find `a` is still there. However, if you try to get `a`, the response is
+
+```dotnetcli
+{
+  "data": null,
+  "metadata": {
+    "created_time": "2021-05-27T07:19:36.9940852Z",
+    "deletion_time": "2021-05-27T07:19:52.4875828Z",
+    "destroyed": false,
+    "version": 4
+  }
+}
+```
+
+You can see the data is deleted, but the entry is still there. As we talked before, the version control system keeps the entry after the deletion. You can still roll back to previous version
+
+If you rewrite the data, `created_time` will be updated; `deletion_time` will be empty; `version` will increase by one
+
+## Token under policies constraint
+
+You can switch to the new token and check the permission under `my-policy`
+
+```dotnetcli
+export VAULT_TOKEN=s.jDwrDgDUJ2jfKn0Ek7fUq50B
+```
+
+Here is a quick remind of `my-policy`
+
+```dotnetcli
+{"policy":
+"path \"secret/data/*\" {
+  capabilities = [\"create\", \"update\"]
+}
+
+path \"secret/data/foo\" {
+  capabilities = [\"read\"]
+}"
+}
+```
+
+You can create a secret under `creds` with a key `password` and its vaule set to `my-long-password` in `secret/creds`
 
 ```dotnetcli
 curl \
     --header "X-Vault-Token: $VAULT_TOKEN" \
     --request POST \
     --data '{ "data": {"password": "my-long-password"} }' \
-    http://127.0.0.1:8200/v1/secret/data/creds | jq -r ".data"
+    http://127.0.0.1:80/v1/secret/data/creds | jq -r ".data"
 ```
 
 You should receive
 
 ```dotnetcli
 {
-  "created_time": "2020-02-05T16:51:34.0887877Z",
+  "created_time": "2021-05-27T01:24:07.7979282Z",
   "deletion_time": "",
   "destroyed": false,
   "version": 1
 }
 ```
 
+If you try to access the secrets under creds, you will get `null`
+
+```dotnetcli
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request GET \
+    http://127.0.0.1:80/v1/secret/data/creds | jq -r ".data"
+```
+
+If you resend the request without jq, you see the error message
+
+```dotnetcli
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request GET \
+    http://127.0.0.1:80/v1/secret/data/creds
+
+{"errors":["1 error occurred:\n\t* permission denied\n\n"]}
+```
+
+It is because the new token is permitted to create, but not to read entries or list path under `secret/`. One exception is that you can read `secret/foo`
+
+```dotnetcli
+curl \
+    --header "X-Vault-Token: $VAULT_TOKEN" \
+    --request GET \
+    http://127.0.0.1:80/v1/secret/data/foo | jq -r ".data"
+```
+
+Sample response:
+
+```dotnetcli
+{
+  "data": {
+    "url": "http://mywebsite.com/abc"
+  },
+  "metadata": {
+    "created_time": "2021-05-27T03:10:17.4148797Z",
+    "deletion_time": "",
+    "destroyed": false,
+    "version": 1
+  }
+}
+```
+
+## Log out
+
 You can log out by unseting the environment variable if you are using the terminal
 
 ```dotnetcli
 unset VAULT_TOKEN
-```
-
-export key1=$(cat key | grep -i key | sed -n 1p | cut -d ':' -f2 | tr -d ' ')
-
-replace `1p` to `np` for the nth key
-
-export token=$(cat key | grep -i token | sed -n 1p | cut -d ':' -f2 | tr -d ' ')
-
-It is important to use `eval cat` to write the bash script with variables. The variable also need to be prefixed by `/$` rather than `$`
-
-```dotnetcli
-eval cat > init.sh <<EOF
-#!/bin/bash
-touch keys
-if [[ ! -s keys ]]
-then
-    echo "init..."
-    vault operator init -key-shares=3 -key-threshold=2 > keys
-fi
-export vault_key1=\$(cat keys | grep -i key | sed -n 1p | cut -d ':' -f2 | tr -d ' ')
-export vault_key2=\$(cat keys | grep -i key | sed -n 2p | cut -d ':' -f2 | tr -d ' ')
-export vault_token=\$(cat keys | grep -i token | sed -n 1p | cut -d ':' -f2 | tr -d ' ')
-vault operator unseal \$vault_key1
-vault operator unseal \$vault_key2
-vault login \$vault_token
-EOF
 ```
